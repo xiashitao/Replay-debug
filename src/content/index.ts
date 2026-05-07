@@ -13,6 +13,9 @@ type ReplayDebugGlobal = typeof globalThis & {
 
 const replayDebugGlobal = globalThis as ReplayDebugGlobal;
 
+// 是否在顶层 frame（非 iframe）
+const isTopFrame = window.self === window.top;
+
 let stopRecording: (() => void) | null = null;
 let isRecording = false;
 let userActionListenersInstalled = false;
@@ -314,32 +317,48 @@ function injectScripts(nonce: string) {
 function startRecording() {
   if (isRecording) return;
   isRecording = true;
-  console.log('[ReplayDebug] Content script: startRecording on', location.href);
+  console.log('[ReplayDebug] Content script: startRecording on', location.href, 'isTopFrame:', isTopFrame);
 
-  // 注入拦截脚本
-  injectScripts(getInjectedScriptNonce());
+  if (isTopFrame) {
+    // 主 frame：注入网络/控制台拦截脚本，启动带跨域 iframe 支持的完整录制
+    injectScripts(getInjectedScriptNonce());
 
-  // 启动 rrweb 录制
-  stopRecording = record({
-    emit(event) {
-      sendMessage('RRWEB_EVENT', event);
-    },
-    recordCanvas: true,
-    blockSelector: 'video,audio',
-  });
+    stopRecording = record({
+      emit(event) {
+        sendMessage('RRWEB_EVENT', event);
+      },
+      recordCanvas: true,
+      recordCrossOriginIframes: true,
+    });
 
-  // 监听用户交互（只注册一次）
-  listenUserActions();
+    listenUserActions();
+  } else {
+    // 跨域子 iframe：将 rrweb 事件 postMessage 给父 frame，
+    // 父 frame 的 rrweb recorder（recordCrossOriginIframes: true）会自动收集
+    stopRecording = record({
+      emit(event) {
+        try {
+          window.parent.postMessage({ type: 'rrweb', event }, '*');
+        } catch {
+          // 父 frame 已关闭或不可访问
+        }
+      },
+    });
+  }
 }
 
-// 停止录制
+// 停止录制：先停 rrweb，再 flush，确保最后一批事件被发送后才响应
 async function stop() {
   isRecording = false;
   if (stopRecording) {
     stopRecording();
     stopRecording = null;
   }
-  await flushEventBuffer();
+  if (isTopFrame) {
+    await flushEventBuffer();
+    // 额外等待一个宏任务周期，确保 sendRuntimeMessage 的异步回调已入队
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 // 监听来自 Background 的消息

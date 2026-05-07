@@ -11,10 +11,10 @@ const RRWEB_EVENT_TYPE = {
 
 const RRWEB_INCREMENTAL_SOURCE = {
   Mutation: 0,
-  MediaInteraction: 7,
 } as const;
 
-const MEDIA_REPLAY_ATTRIBUTES = [
+// rr_media* 是 rrweb 内部运行时状态，回放端会重新计算，保留旧值反而造成状态错乱
+const STALE_RRWEB_ATTRIBUTES = [
   'rr_mediaState',
   'rr_mediaCurrentTime',
   'rr_mediaPlaybackRate',
@@ -22,9 +22,6 @@ const MEDIA_REPLAY_ATTRIBUTES = [
   'rr_mediaLoop',
   'rr_mediaVolume',
 ];
-
-const MEDIA_SOURCE_ATTRIBUTES = ['src', 'srcset', 'autoplay'];
-const MEDIA_TAGS = new Set(['audio', 'video', 'source']);
 
 interface TimelineItem {
   id: string;
@@ -64,11 +61,8 @@ function sanitizeReplayEvent(event: unknown): unknown | null {
     return event;
   }
 
-  if (rrEvent.data.source === RRWEB_INCREMENTAL_SOURCE.MediaInteraction) {
-    return null;
-  }
-
   if (rrEvent.data.source !== RRWEB_INCREMENTAL_SOURCE.Mutation) {
+    // 保留所有非 Mutation 的增量事件（包括 MediaInteraction、Scroll 等）
     return event;
   }
 
@@ -97,7 +91,7 @@ function sanitizeSerializedNode(node: any): any {
 
   const next = { ...node };
   if (next.attributes && typeof next.attributes === 'object') {
-    next.attributes = sanitizeAttributes(next.attributes, next.tagName);
+    next.attributes = sanitizeAttributes(next.attributes);
   }
 
   if (Array.isArray(next.childNodes)) {
@@ -107,15 +101,12 @@ function sanitizeSerializedNode(node: any): any {
   return next;
 }
 
-function sanitizeAttributes(attributes: any, tagName?: string): any {
+function sanitizeAttributes(attributes: any): any {
   if (!attributes || typeof attributes !== 'object') return attributes;
 
   const next = { ...attributes };
-  MEDIA_REPLAY_ATTRIBUTES.forEach((attr) => delete next[attr]);
-
-  if (tagName && MEDIA_TAGS.has(tagName.toLowerCase())) {
-    MEDIA_SOURCE_ATTRIBUTES.forEach((attr) => delete next[attr]);
-  }
+  // 只删除 rrweb 内部运行时状态属性，不动 src/srcset 等真实内容属性
+  STALE_RRWEB_ATTRIBUTES.forEach((attr) => delete next[attr]);
 
   return next;
 }
